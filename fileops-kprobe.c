@@ -38,7 +38,7 @@ struct event_context {
 	s64 access_time; //访问时间
 } event_context;
 /* kprobe pre_handler: called just before the probed instruction is executed */
-static int __kprobes handler_pre(struct kprobe *p, struct pt_regs *regs)
+static int __kprobes write_handler_pre(struct kprobe *p, struct pt_regs *regs)
 {
 	const struct file *file = (struct file *)regs->di;//因为x86的参数传递规则是di，si，dx，cx，r8，r9，所以di就是vfs_write的第一个参数。arm默认是r0，r1，r2，r3，相应的取r0
     static struct event_context *event;
@@ -69,7 +69,7 @@ static int __kprobes handler_pre(struct kprobe *p, struct pt_regs *regs)
 }
 
 /* kprobe post_handler: called after the probed instruction is executed */
-static void __kprobes handler_post(struct kprobe *p, struct pt_regs *regs,
+static void __kprobes write_handler_post(struct kprobe *p, struct pt_regs *regs,
 				unsigned long flags)
 {
 
@@ -78,8 +78,8 @@ static void __kprobes handler_post(struct kprobe *p, struct pt_regs *regs,
 static int __init kprobe_init(void)
 {
 	int ret;
-	kp.pre_handler = handler_pre;
-	kp.post_handler = handler_post;
+	kp.pre_handler = write_handler_pre;
+	kp.post_handler = write_handler_post;
 
 	ret = register_kprobe(&kp);
 	if (ret < 0) {
