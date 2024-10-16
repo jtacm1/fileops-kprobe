@@ -15,16 +15,16 @@
 #define DEFAULT_RET_STR "-2"
 #define NAME_TOO_LONG "-4"
 
-struct event_context {
-    char * process_name;	//进程名
-    char * process_parent; //父进程名
-    const char * access_op;	//访问操作
-    const unsigned char * file_name;     //文件名
-    char * file_path;     //文件路径
-    size_t size;  //文件大小
-    unsigned long inode;  //文件inode
-    s64 access_time; //访问时间
-} event_context;
+// struct event_context {
+//     char * process_name;	//进程名
+//     char * process_parent; //父进程名
+//     const char * access_op;	//访问操作
+//     const unsigned char * file_name;     //文件名
+//     char * file_path;     //文件路径
+//     size_t size;  //文件大小
+//     unsigned long inode;  //文件inode
+//     s64 access_time; //访问时间
+// } event_context;
 
 #define f_kmalloc(size, flags) kmalloc(size, flags | __GFP_NOWARN)
 #define f_kzalloc(size, flags) kzalloc(size, flags | __GFP_NOWARN)

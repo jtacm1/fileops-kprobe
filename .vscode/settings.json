@@ -78,6 +78,8 @@
     "tuple": "c",
     "typeinfo": "c",
     "utility": "c",
-    "initializer_list": "c"
+    "initializer_list": "c",
+    "mutex.h": "c",
+    "spinlock.h": "c"
   }
 }

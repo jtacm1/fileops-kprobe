@@ -1,0 +1,1 @@
+cmd_/home/jt/fileops-kprobe/fileops-kprobe.ko := ld -r -m elf_x86_64  -z max-page-size=0x200000 -z noexecstack   --build-id  -T ./scripts/module-common.lds -o /home/jt/fileops-kprobe/fileops-kprobe.ko /home/jt/fileops-kprobe/fileops-kprobe.o /home/jt/fileops-kprobe/fileops-kprobe.mod.o;  true
