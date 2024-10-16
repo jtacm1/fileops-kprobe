@@ -44,7 +44,6 @@ static __always_inline unsigned long __must_check f_copy_from_user(void *to, con
     return res;
 }
 
-
 static inline unsigned long regs_get_arg1(struct pt_regs *regs) {
     return regs->di;
 }

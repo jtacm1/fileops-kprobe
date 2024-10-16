@@ -24,27 +24,49 @@ static DEFINE_MUTEX(kmutex);
 static rwlock_t write_lock;
 static char symbol[MAX_SYMBOL_LEN] = "vfs_write";
 module_param_string(symbol, symbol, sizeof(symbol), 0644);
+static char target_dir[PATH_MAX] = MONITOR_PATH;
+module_param_string(target_dir, target_dir, sizeof(target_dir), 0644);
 
 /* For each probe you need to allocate a kprobe structure */
 static struct kprobe kp = {
 	.symbol_name	= symbol,
 };
 
-static char *f_d_path(const struct path *path, char *buf, int buflen)
+static char *f_get_path(const struct file *file, char *buf, int buflen)
 {
-	char *name = DEFAULT_RET_STR;
+	char *pathstr = DEFAULT_RET_STR;
 	if (buf) {
-		name = d_path(path, buf, buflen);
-		if (IS_ERR(name))
-			name = NAME_TOO_LONG;
+		pathstr = d_path(&(file->f_path), buf, buflen);
+		if (IS_ERR(pathstr))
+			pathstr = NAME_TOO_LONG;
 	}
-	return name;
+	return pathstr;
 }
+
+static loff_t get_file_size(const struct file *file){
+	struct kstat stat;
+	int ret;
+	ret = vfs_getattr(&(file->f_path), &stat, STATX_SIZE, AT_STATX_SYNC_AS_STAT);
+
+	if (ret)
+		return -ret;
+	//获取文件大小
+	return stat.size;
+}
+
+// int checkCPUendian(void) {
+//     union {
+//         unsigned long int i;
+//         unsigned char s[4];
+//     } c;
+//     c.i = 0x12345678;
+//     return (0x12 == c.s[0]);
+// }
 
 /* kprobe pre_handler: called just before the probed instruction is executed */
 static int __kprobes write_handler_pre(struct kprobe *p, struct pt_regs *regs)
 {
-	const struct file *file = (struct file *)regs_get_arg1(regs);//因为x86的参数传递规则是di，si，dx，cx，r8，r9，所以di就是vfs_write的第一个参数。arm默认是r0，r1，r2，r3，相应的取r0
+	struct file *file = (struct file *)regs_get_arg1(regs);//因为x86的参数传递规则是di，si，dx，cx，r8，r9，所以di就是vfs_write的第一个参数。arm默认是r0，r1，r2，r3，相应的取r0
     // static struct event_context *event;
 	// const char __user *buf;
 	// char *kbuf = NULL;
@@ -54,29 +76,30 @@ static int __kprobes write_handler_pre(struct kprobe *p, struct pt_regs *regs)
 	char *parent_proc;
 	char *f_op;
 	char *f_name;
-	size_t size = (size_t)regs_get_arg3(regs);
+	struct kstat stat;
 	unsigned long ino;
+	size_t len = (size_t)regs_get_arg3(regs);
 	s64 timestamp;
 
     // 写锁保护
     write_lock(&write_lock);
 
     // 只处理有效的文件写操作
-    if (size <= 0 || !S_ISREG(file_inode(file)->i_mode)) {
+    if (unlikely(len <= 0 || !S_ISREG(file_inode(file)->i_mode))) {
         write_unlock(&write_lock);
         return 0;
     }
 
     // 分配路径缓冲区
     pname_buf = f_kzalloc(PATH_MAX, GFP_ATOMIC);
-    if (!pname_buf) {
+    if (unlikely(!pname_buf)) {
         write_unlock(&write_lock);
         return 0;
     }
 
     // 获取文件路径
-    filepath = f_d_path(&(file->f_path), pname_buf, PATH_MAX);
-    if (IS_ERR(filepath)) {
+    filepath = f_get_path(file, pname_buf, PATH_MAX);
+    if (unlikely(IS_ERR(filepath))) {
         kfree(pname_buf);
         write_unlock(&write_lock);
         return 0;
@@ -89,6 +112,13 @@ static int __kprobes write_handler_pre(struct kprobe *p, struct pt_regs *regs)
         return 0;  // 如果文件路径不匹配，则直接返回
     }
 
+	stat.size = get_file_size(file);
+	if (unlikely(stat.size <= 0)){
+		kfree(pname_buf);
+		write_unlock(&write_lock);
+		return 0;
+	}
+
     // 记录进程和文件信息
     proc_name = current->comm;
     parent_proc = current->real_parent->comm;
@@ -98,16 +128,14 @@ static int __kprobes write_handler_pre(struct kprobe *p, struct pt_regs *regs)
     timestamp = (s64)ktime_get_real_seconds();
 
     // 打印信息
-    pr_info("process_name:%s\tprocess_parent:%s\tfile_op: %s\tfile_name:%p\tfile_path:%s\tsize:%ld\tinode:%lu\taccess_time:%lld\t\n",
-            proc_name, parent_proc, f_op, f_name, filepath, size, ino, timestamp);
+    pr_info("process_name:%s\tprocess_parent:%s\tfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\tinode:%lu\taccess_time:%lld\t\n",
+            proc_name, parent_proc, f_op, f_name, filepath, stat.size, ino, timestamp);
 
     // 释放资源
     kfree(pname_buf);
     write_unlock(&write_lock);
 
     return 0;
-
-
 }
 
 /* kprobe post_handler: called after the probed instruction is executed */
