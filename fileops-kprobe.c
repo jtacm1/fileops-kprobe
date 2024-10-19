@@ -11,14 +11,13 @@
  */
 
 #define pr_fmt(fmt) "%s: " fmt, __func__
-
-#include "./util.h"
-#include <linux/mutex.h>
-#include <linux/rwlock.h>
+// #include <linux/mutex.h>
+// #include <linux/rwlock.h>
 #include <linux/string.h>
+#include "./util.h"
 
 // #define MAX_SYMBOL_LEN	64
-#define MONITOR_PATH "/home/jt/下载/"  // 指定需要监控的目录
+#define MONITOR_PATH "/home/jt/下载"  // 默认指定需要监控的目录
 #define WRITE_OP "001"
 #define READ_OP "002"
 #define RENAME_OP "003"
@@ -26,14 +25,16 @@
 #define CREATE_OP "005"
 #define DELETE_OP "006"
 #define OPEN_OP "007"
+#define DEFAULT_INO -1
+#define DEFAULT_SIZE 0
 // static DEFINE_MUTEX(kmutex);
 // static rwlock_t write_lock;
 // static char symbol[MAX_SYMBOL_LEN] = "vfs_write";
 // module_param_string(symbol, symbol, sizeof(symbol), 0644);
 #define	RESULT_LEN	2048
 static char target_dir[PATH_MAX] = MONITOR_PATH;
-module_param_string(target_dir, target_dir, sizeof(target_dir), 0644);
-
+module_param_string(dir, target_dir, PATH_MAX, 0644);
+MODULE_PARM_DESC(dir, "target directory to monitor");
 
 static char *f_get_path(const struct file *file, char *buf, int buflen)
 {
@@ -103,7 +104,7 @@ static int write_handler_pre(struct kprobe *p, struct pt_regs *regs)
     }
 
     // 只监控特定目录的文件操作
-    if (strncmp(filepath, MONITOR_PATH, strlen(MONITOR_PATH)) != 0) {
+    if (strncmp(filepath, target_dir, strlen(target_dir)) != 0) {
         kfree(pname_buf);
         // write_unlock(&write_lock);
         return 0;  // 如果文件路径不匹配，则直接返回
@@ -178,7 +179,7 @@ static int read_handler_pre(struct kprobe *p, struct pt_regs *regs)
     }
 
     // 只监控特定目录的文件操作
-    if (strncmp(filepath, MONITOR_PATH, strlen(MONITOR_PATH)) != 0) {
+    if (strncmp(filepath, MONITOR_PATH, strlen(target_dir)) != 0) {
         kfree(pname_buf);
         // write_unlock(&write_lock);
         return 0;  // 如果文件路径不匹配，则直接返回
@@ -247,7 +248,7 @@ static int rename_handler_pre(struct kprobe *p, struct pt_regs *regs){
 	}
 
 	// 只监控特定目录的文件操作
-    if (strncmp(filepath, MONITOR_PATH, strlen(MONITOR_PATH)) != 0) {
+    if (strncmp(filepath, target_dir, strlen(target_dir)) != 0) {
         kfree(pname_buf);
         // write_unlock(&write_lock);
         return 0;  // 如果文件路径不匹配，则直接返回
@@ -312,7 +313,7 @@ static int close_handler_pre(struct kprobe *p, struct pt_regs *regs){
     }
 
     // 只监控特定目录的文件操作
-    if (strncmp(filepath, MONITOR_PATH, strlen(MONITOR_PATH)) != 0) {
+    if (strncmp(filepath, target_dir, strlen(target_dir)) != 0) {
         kfree(pname_buf);
         // write_unlock(&write_lock);
         return 0;  // 如果文件路径不匹配，则直接返回
@@ -346,54 +347,54 @@ static void create_handler_post(struct kprobe *p, struct pt_regs *regs, unsigned
 	char *filepath = DEFAULT_RET_STR;
 	char *result_str = NULL;
 	char *f_name = NULL;
-	long long size;
-	unsigned long ino;
+	// long long size;
+	// long ino = DEFAULT_INO; 
 
 	//分配内存给文件路径缓冲区
 	pname_buf = kzalloc(PATH_MAX, GFP_KERNEL);
 	if (unlikely(!pname_buf)) {
-		return;
+		return ;
 	}
 
 		//只处理有效的文件创建操作
-	if (unlikely(IS_ERR_OR_NULL(dentry) || !(dentry->d_inode) || !S_ISREG(dentry->d_inode->i_mode))){
+	if (unlikely(IS_ERR_OR_NULL(dentry))){
 		kfree(pname_buf);
-		return;	
+		return ;	
 	}
 	//获取文件路径
 	filepath = dentry_path_raw(dentry, pname_buf, PATH_MAX);
 	if (unlikely(IS_ERR(filepath))) {
 		kfree(pname_buf);
-		return;
+		return ;
 	}
-
+	// pr_info("%s\n", filepath);
 	// 只监控特定目录的文件操作
-	if (strncmp(filepath, MONITOR_PATH, strlen(MONITOR_PATH)) != 0) {
+	if (strncmp(filepath, target_dir, strlen(target_dir)) != 0) {
 		kfree(pname_buf);
-		return;  // 如果文件路径不匹配，则直接返回
+		return ;  // 如果文件路径不匹配，则直接返回
 	}
 	//获取文件大小
-	size = dentry->d_inode->i_size;
-	if (unlikely(size <= 0)){
-		kfree(pname_buf);
-		return;
-	}	
+	// size = dentry->d_inode->i_size;
+	// if (unlikely(size <= 0)){
+	// 	kfree(pname_buf);
+	// 	return 0;
+	// }	
 	//记录文件名和inode号
 	f_name = (char *)dentry->d_name.name;
-	ino = dentry->d_inode->i_ino;
-
+	
 	result_str = kzalloc(RESULT_LEN, GFP_KERNEL);
 	if (likely(result_str)){
-		snprintf(result_str, RESULT_LEN, "process_name:%s\tprocess_parent:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\t\n",
-									current->comm, current->real_parent->comm, CREATE_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
+		snprintf(result_str, RESULT_LEN, "process_name:%s\tprocess_parent:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %d Bytes\ninode:%d\taccess_time:%lld\t\n",
+									current->comm, current->real_parent->comm, CREATE_OP, f_name, filepath, DEFAULT_SIZE, DEFAULT_INO, ktime_get_real_seconds());
 	}	
 	pr_info("%s", result_str);
 	//释放内存资源
+	// pr_info("是不是你5！\n");
 	kfree(pname_buf);
 	if (likely(result_str))
 		kfree(result_str);
 	
-	return;
+	return ;
 }
 
 static int delete_handler_pre(struct kprobe *p, struct pt_regs *regs){
@@ -412,7 +413,8 @@ static int delete_handler_pre(struct kprobe *p, struct pt_regs *regs){
 	}
 
 	//只处理有效的文件删除操作
-	if (unlikely(IS_ERR_OR_NULL(dentry) || !(dentry->d_inode) || !S_ISREG(dentry->d_inode->i_mode))){
+	//|| !S_ISREG(dentry->d_inode->i_mode)
+	if (unlikely(IS_ERR_OR_NULL(dentry) || !(dentry->d_inode))){
 		kfree(pname_buf);
 		return 0;	
 	}
@@ -425,7 +427,7 @@ static int delete_handler_pre(struct kprobe *p, struct pt_regs *regs){
 	}
 
 	// 只监控特定目录的文件操作
-	if (strncmp(filepath, MONITOR_PATH, strlen(MONITOR_PATH)) != 0) {
+	if (strncmp(filepath, target_dir, strlen(target_dir)) != 0) {
 		kfree(pname_buf);
 		return 0;  // 如果文件路径不匹配，则直接返回
 	}
@@ -483,7 +485,7 @@ static int open_handler_pre(struct kprobe *p, struct pt_regs *regs)
 	}
 
 	// 只监控特定目录的文件操作
-	if (strncmp(filepath, MONITOR_PATH, strlen(MONITOR_PATH)) != 0){
+	if (strncmp(filepath, target_dir, strlen(target_dir)) != 0){
 		kfree(pname_buf);
 		return 0;
 	}
@@ -500,7 +502,7 @@ static int open_handler_pre(struct kprobe *p, struct pt_regs *regs)
 	ino = file->f_inode->i_ino;
 
 	result_str = kzalloc(RESULT_LEN, GFP_KERNEL);
-	if (likely(result_str){
+	if (likely(result_str)){
 		snprintf(result_str, RESULT_LEN, "process_name:%s\tprocess_parent:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\n",
 			current->comm, current->real_parent->comm, OPEN_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
 	}
@@ -539,7 +541,7 @@ static struct kprobe close_kprobe = {
 };
 
 static struct kprobe create_kprobe = {
-	.symbol_name = "security_inode_create",
+	.symbol_name = "ext4_create",
 	.post_handler = create_handler_post,
 };
 
@@ -685,7 +687,7 @@ static int __init kprobe_init(void)
 		pr_err("register_kprobe failed\n, returned %d\n", ret);
 		return ret;
 	}
-	pr_info("register_ kprobe success: write/read/rename/close/create/delete.\n");
+	pr_info("register_ kprobe success: write/read/rename/close/create/delete/open.\n");
 	return 0;
 }
 
