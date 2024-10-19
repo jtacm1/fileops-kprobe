@@ -1,0 +1,154 @@
+#define pr_fmt(fmt) "%s: " fmt, __func__
+
+#include "./util.h"
+#include <linux/mutex.h>
+#include <linux/rwlock.h>
+#include <linux/string.h>
+// #include <file.h>
+#include <linux/file.h>
+
+#define RESULT_LEN	2048
+#define MONITOR_PATH "/home/jt/下载/"  // 指定需要监控的目录
+#define OPEN_OP "OPEN"
+// static DEFINE_MUTEX(kmutex);
+// static rwlock_t write_lock;
+// static char symbol[MAX_SYMBOL_LEN] = "vfs_write";
+// module_param_string(symbol, symbol, sizeof(symbol), 0644);
+static char target_dir[PATH_MAX] = MONITOR_PATH;
+module_param_string(target_dir, target_dir, sizeof(target_dir), 0644);
+// static char static_path_buf[PATH_MAX] = {0};
+
+// static char *f_get_path(const struct file *file, char *buf, int buflen)
+// {
+// 	char *pathstr = DEFAULT_RET_STR;
+// 	if (buf) {
+// 		pathstr = d_path(&(file->f_path), buf, buflen);
+// 		if (IS_ERR(pathstr))
+// 			pathstr = NAME_TOO_LONG;
+// 	}
+// 	return pathstr;
+// }
+
+// static loff_t get_file_size(const struct file *file){
+// 	struct kstat stat;
+// 	int ret;
+// 	ret = vfs_getattr(&(file->f_path), &stat, STATX_SIZE, AT_STATX_SYNC_AS_STAT);
+
+// 	if (ret)
+// 		return -ret;
+// 	//获取文件大小
+// 	return stat.size;
+// }
+
+// int checkCPUendian(void) {
+//     union {
+//         unsigned long int i;
+//         unsigned char s[4];
+//     } c;
+//     c.i = 0x12345678;
+//     return (0x12 == c.s[0]);
+// }
+
+/* kprobe pre_handler: called just before the probed instruction is executed */
+static int open_handler_pre(struct kprobe *p, struct pt_regs *regs){
+	
+    struct file *file = NULL;
+	char *pname_buf = NULL;
+	char *filepath = DEFAULT_RET_STR;
+	char *result_str = NULL;
+	char *f_name = NULL;
+	long long size;
+	unsigned long ino;
+
+
+
+	file = (struct file *) regs_get_arg1(regs);
+    if (!file)
+		return 0;
+	//分配内存给文件路径缓冲区
+	pname_buf = kzalloc(PATH_MAX, GFP_KERNEL);
+	if (unlikely(!pname_buf)) {
+		return 0;
+	}
+
+	if (!file->f_path.dentry || !file->f_path.dentry->d_inode) {
+    	kfree(pname_buf);
+    	return 0;
+	}
+
+		//只处理有效的文件创建操作
+	if (unlikely(!S_ISREG(file->f_path.dentry->d_inode->i_mode))){
+		kfree(pname_buf);
+		return 0;	
+	}
+	//获取文件路径
+	filepath = dentry_path_raw(file->f_path.dentry, pname_buf, PATH_MAX);
+	if (unlikely(IS_ERR(filepath))) {
+		kfree(pname_buf);
+		return 0;
+	}
+
+	// 只监控特定目录的文件操作
+	if (strncmp(filepath, MONITOR_PATH, strlen(MONITOR_PATH)) != 0) {
+		kfree(pname_buf);
+		return 0;  // 如果文件路径不匹配，则直接返回
+	}
+	//获取文件大小
+	size = file->f_path.dentry->d_inode->i_size;
+	if (unlikely(size <= 0)){
+		kfree(pname_buf);
+		return 0;
+	}	
+	//记录文件名和inode号
+	f_name = (char *)file->f_path.dentry->d_name.name;
+	ino = file->f_path.dentry->d_inode->i_ino;
+
+	result_str = kzalloc(RESULT_LEN, GFP_KERNEL);
+	if (likely(result_str)){
+		snprintf(result_str, RESULT_LEN, "process_name:%s\tprocess_parent:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\t\n",
+									current->comm, current->real_parent->comm, OPEN_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
+	}	
+	pr_info("%s", result_str);
+	//释放内存资源
+	kfree(pname_buf);
+	if (likely(result_str))
+		kfree(result_str);
+	
+	return 0;
+}
+
+/* kprobe post_handler: called after the probed instruction is executed */
+
+
+/* For each probe you need to allocate a kprobe structure */
+static struct kprobe kp = {
+	.symbol_name	= "security_file_open",
+	.pre_handler = open_handler_pre,
+    // .maxactive = 10,
+};
+
+static int __init kprobe_init(void)
+{
+	int ret;
+
+	// mutex_init(&kmutex);
+	// rwlock_init(&write_lock);
+	ret = register_kprobe(&kp);
+	if (ret < 0) {
+		pr_err("register_kprobe failed, returned %d\n", ret);
+		return ret;
+	}
+	pr_info("Planted kprobe at %p\n", kp.addr);
+	return 0;
+}
+
+static void __exit kprobe_exit(void)
+{
+	unregister_kprobe(&kp);
+	// mutex_unlock(&kmutex);
+	pr_info("kprobe at %p unregistered\n", kp.addr);
+}
+
+module_init(kprobe_init)
+module_exit(kprobe_exit)
+MODULE_LICENSE("GPL");

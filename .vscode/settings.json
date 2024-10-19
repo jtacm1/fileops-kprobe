@@ -80,6 +80,7 @@
     "utility": "c",
     "initializer_list": "c",
     "mutex.h": "c",
-    "spinlock.h": "c"
+    "spinlock.h": "c",
+    "cstdlib": "c"
   }
 }
