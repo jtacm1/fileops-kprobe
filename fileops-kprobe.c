@@ -18,13 +18,14 @@
 
 // #define MAX_SYMBOL_LEN	64
 #define MONITOR_PATH "/home/jt/下载"  // 默认指定需要监控的目录
-#define WRITE_OP "001"
-#define READ_OP "002"
-#define RENAME_OP "003"
-#define CLOSE_OP "004"
-#define CREATE_OP "005"
-#define DELETE_OP "006"
-#define OPEN_OP "007"
+#define CREATE_OP "01"
+#define OPEN_OP "02"
+#define WRITE_OP "03"
+#define READ_OP "04"
+#define RENAME_OP "05"
+#define CLOSE_OP "06"
+#define DELETE_OP "07"
+
 #define DEFAULT_INO -1
 #define DEFAULT_SIZE 0
 // static DEFINE_MUTEX(kmutex);
@@ -687,7 +688,7 @@ static int __init kprobe_init(void)
 		pr_err("register_kprobe failed\n, returned %d\n", ret);
 		return ret;
 	}
-	pr_info("register_ kprobe success: write/read/rename/close/create/delete/open.\n");
+	pr_info("register_ kprobe success: create/open/write/read/rename/close/delete_kprobe.\n");
 	return 0;
 }
 
