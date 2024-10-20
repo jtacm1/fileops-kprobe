@@ -11,12 +11,12 @@
  */
 
 #define pr_fmt(fmt) "%s: " fmt, __func__
-// #include <linux/mutex.h>
-// #include <linux/rwlock.h>
 #include <linux/string.h>
 #include "./util.h"
+#include <linux/list.h>
+#include <linux/hashtable.h>
 
-// #define MAX_SYMBOL_LEN	64
+
 #define MONITOR_PATH "/home/jt/下载"  // 默认指定需要监控的目录
 #define CREATE_OP "01"
 #define OPEN_OP "02"
@@ -28,25 +28,36 @@
 
 #define DEFAULT_INO -1
 #define DEFAULT_SIZE 0
-// static DEFINE_MUTEX(kmutex);
-// static rwlock_t write_lock;
-// static char symbol[MAX_SYMBOL_LEN] = "vfs_write";
-// module_param_string(symbol, symbol, sizeof(symbol), 0644);
+
 #define	RESULT_LEN	2048
+// #define HASH_BITS 11
 static char target_dir[PATH_MAX] = MONITOR_PATH;
 module_param_string(dir, target_dir, PATH_MAX, 0644);
 MODULE_PARM_DESC(dir, "target directory to monitor");
+DEFINE_HASHTABLE(inode_hash_table, 11); //定义inode哈系表
+LIST_HEAD(inode_list); //定义inode双向链表头
+rwlock_t inode_hash_lock; //定义inode哈系表读写锁
 
-static char *f_get_path(const struct file *file, char *buf, int buflen)
-{
-	char *pathstr = DEFAULT_RET_STR;
-	if (buf) {
-		pathstr = d_path(&(file->f_path), buf, buflen);
-		if (IS_ERR(pathstr))
-			pathstr = NAME_TOO_LONG;
-	}
-	return pathstr;
-}
+//定义表中inode节点的结构体
+struct inode_info {
+	unsigned long ino; //inode号，文件唯一标识
+	char *file_name; //文件名
+	char *file_path; //文件路径
+	long long size; //文件大小
+	struct list_head i_list; //双向链表节点
+	struct hlist_node i_hash; //哈系表节点
+};
+
+// static char *f_get_path(const struct file *file, char *buf, int buflen)
+// {
+// 	char *pathstr = DEFAULT_RET_STR;
+// 	if (buf) {
+// 		pathstr = d_path(&(file->f_path), buf, buflen);
+// 		if (IS_ERR(pathstr))
+// 			pathstr = NAME_TOO_LONG;
+// 	}
+// 	return pathstr;
+// }
 
 // static loff_t get_file_size(const struct file *file){
 // 	struct kstat stat;
@@ -68,6 +79,91 @@ static char *f_get_path(const struct file *file, char *buf, int buflen)
 //     return (0x12 == c.s[0]);
 // }
 
+
+////添加某个inode项及对应的文件信息
+static int add_inode(unsigned long ino, char *file_name, char *file_path, long long size){
+	struct inode_info *i = NULL;
+	//写入写锁
+	write_lock(&inode_hash_lock);
+	//分配内存空间
+	i = kzalloc(sizeof(struct inode_info), GFP_KERNEL);
+	if (!i){
+		pr_alert("fail to alloc memory for inode_info.\n");
+		write_unlock(&inode_hash_lock);
+		return 0;
+	}	
+	//添加inode项
+	i->ino = ino;
+	i->file_name = kstrdup(file_name, GFP_KERNEL);
+	i->file_path = kstrdup(file_path, GFP_KERNEL);
+	if (!i->file_name || !i->file_path) {
+		kfree(i->file_name);
+		kfree(i->file_path);
+		pr_alert("fail to alloc memory for file name or path.\n");
+		kfree(i);
+		write_unlock(&inode_hash_lock);
+		return 0;
+	}
+	i->size = size;
+	//添加到哈系表中
+	hash_add(inode_hash_table, &(i->i_hash), ino);
+	//添加到链表中
+	list_add(&(i->i_list), &inode_list);
+	//释放写锁
+	write_unlock(&inode_hash_lock);
+	pr_info("added inode: %lu, path: %s, file: %s\n", i->ino, i->file_path, i->file_name);
+	return  1;
+}
+
+//查找某个inode项，获取对应的文件信息
+static struct inode_info *find_inode(unsigned long ino)
+{
+	struct inode_info *i;
+
+	//获取读锁
+	read_lock(&inode_hash_lock);
+	hash_for_each_possible(inode_hash_table, i, i_hash, ino)
+	{
+		if (i->ino == ino) {
+			//释放读锁
+			read_unlock(&inode_hash_lock);
+			return i;
+		}
+	}
+	// pr_info("inode: %lu not found.\n", ino);
+	//没有找到匹配项，释放读锁
+	read_unlock(&inode_hash_lock);
+	return NULL;
+}
+
+static void delete_inode (unsigned long ino) {
+	struct inode_info *i;
+	//获取写锁
+	write_lock(&inode_hash_lock);
+	hash_for_each_possible(inode_hash_table, i, i_hash, ino)
+	{
+		if (i->ino == ino) {
+			//从哈系表中删除
+			hash_del(&i->i_hash);
+			//从链表中删除
+			list_del(&i->i_list);
+			pr_info("deleted inode: %lu, path: %s. file: %s\n", i->ino, i->file_path, i->file_name);
+
+			//释放内存
+			kfree(i->file_name);
+			kfree(i->file_path);
+			kfree(i);
+			//释放写锁
+			write_unlock(&inode_hash_lock);
+			return;
+		}
+	}
+	pr_info("inode: %lu not found for deletion.\n", ino);
+	//未找到匹配项，释放写锁
+	write_unlock(&inode_hash_lock);
+	return;
+}
+
 /* kprobe pre_handler: called just before the probed instruction is executed */
 static int write_handler_pre(struct kprobe *p, struct pt_regs *regs)
 {
@@ -79,7 +175,8 @@ static int write_handler_pre(struct kprobe *p, struct pt_regs *regs)
 	long long size;
 	unsigned long ino;
 	size_t len = (size_t)regs_get_arg3(regs);
-
+	struct inode_info *inode_info;
+	struct inode *inode;
     // 写锁保护
     // write_lock(&write_lock);
 
@@ -96,31 +193,43 @@ static int write_handler_pre(struct kprobe *p, struct pt_regs *regs)
         return 0;
     }
 
-    // 获取文件路径
-    filepath = f_get_path(file, pname_buf, PATH_MAX);
-    if (unlikely(IS_ERR(filepath))) {
-        kfree(pname_buf);
-        // write_unlock(&write_lock);
-        return 0;
-    }
-
-    // 只监控特定目录的文件操作
-    if (strncmp(filepath, target_dir, strlen(target_dir)) != 0) {
-        kfree(pname_buf);
-        // write_unlock(&write_lock);
-        return 0;  // 如果文件路径不匹配，则直接返回
-    }
-
-	size = file->f_path.dentry->d_inode->i_size;
-	if (unlikely(size <= 0)){
+	inode = file_inode((const struct file *)file);
+	if (unlikely(!inode))
+	{
 		kfree(pname_buf);
-		// write_unlock(&write_lock);
 		return 0;
 	}
-
-    // 记录文件信息
-    f_name = (char *)file->f_path.dentry->d_name.name;
-    ino = file->f_inode->i_ino;
+	inode_info = find_inode(inode->i_ino);
+	if (unlikely(!inode_info)){
+		filepath = dentry_path_raw(file->f_path.dentry, pname_buf, PATH_MAX);
+		if (unlikely(IS_ERR(filepath))) {
+			kfree(pname_buf);
+			return 0;
+		}
+		// 只监控特定目录的文件操作
+		if (strncmp(filepath, target_dir, strlen(target_dir)) != 0) {
+			kfree(pname_buf);
+			return 0;  // 如果文件路径不匹配，则直接返回
+		}
+		//获取文件大小
+		size = file->f_path.dentry->d_inode->i_size;
+		if (unlikely(size <= 0)){
+			kfree(pname_buf);
+			return 0;
+		}
+		//记录文件名和inode号
+		f_name = (char *)file->f_path.dentry->d_name.name;
+		ino = file->f_path.dentry->d_inode->i_ino;
+		} else {
+				filepath = inode_info->file_path;
+				size = inode_info->size;
+				if (unlikely(size <= 0)){
+					kfree(pname_buf);
+					return 0;
+				}
+				f_name = inode_info->file_name;
+				ino = inode_info->ino;
+			}	
 
 	result_str = kzalloc(RESULT_LEN, GFP_KERNEL);
 	if (likely(result_str)){
@@ -154,6 +263,8 @@ static int read_handler_pre(struct kprobe *p, struct pt_regs *regs)
 	long long size;
 	unsigned long ino;
 	size_t len = (size_t)regs_get_arg3(regs);
+	struct inode_info *inode_info;
+	struct inode *inode;
 
     // 写锁保护
     // write_lock(&write_lock);
@@ -171,31 +282,43 @@ static int read_handler_pre(struct kprobe *p, struct pt_regs *regs)
         return 0;
     }
 
-    // 获取文件路径
-    filepath = f_get_path(file, pname_buf, PATH_MAX);
-    if (unlikely(IS_ERR(filepath))) {
-        kfree(pname_buf);
-        // write_unlock(&write_lock);
-        return 0;
-    }
-
-    // 只监控特定目录的文件操作
-    if (strncmp(filepath, MONITOR_PATH, strlen(target_dir)) != 0) {
-        kfree(pname_buf);
-        // write_unlock(&write_lock);
-        return 0;  // 如果文件路径不匹配，则直接返回
-    }
-
-	size = file->f_path.dentry->d_inode->i_size;
-	if (unlikely(size <= 0)){
+	inode = file_inode((const struct file *)file);
+	if (unlikely(!inode))
+	{
 		kfree(pname_buf);
-		// write_unlock(&write_lock);
 		return 0;
 	}
-
-    // 记录文件信息
-    f_name = (char *)file->f_path.dentry->d_name.name;
-    ino = file->f_inode->i_ino;
+	inode_info = find_inode(inode->i_ino);
+	if (unlikely(!inode_info)){
+		filepath = dentry_path_raw(file->f_path.dentry, pname_buf, PATH_MAX);
+		if (unlikely(IS_ERR(filepath))) {
+			kfree(pname_buf);
+			return 0;
+		}
+		// 只监控特定目录的文件操作
+		if (strncmp(filepath, target_dir, strlen(target_dir)) != 0) {
+			kfree(pname_buf);
+			return 0;  // 如果文件路径不匹配，则直接返回
+		}
+		//获取文件大小
+		size = file->f_path.dentry->d_inode->i_size;
+		if (unlikely(size <= 0)){
+			kfree(pname_buf);
+			return 0;
+		}
+		//记录文件名和inode号
+		f_name = (char *)file->f_path.dentry->d_name.name;
+		ino = file->f_path.dentry->d_inode->i_ino;
+		} else {
+				filepath = inode_info->file_path;
+				size = inode_info->size;
+				if (unlikely(size <= 0)){
+					kfree(pname_buf);
+					return 0;
+				}
+				f_name = inode_info->file_name;
+				ino = inode_info->ino;
+			}	
 
 	result_str = kzalloc(RESULT_LEN, GFP_KERNEL);
 	if (likely(result_str)){
@@ -230,41 +353,58 @@ static int rename_handler_pre(struct kprobe *p, struct pt_regs *regs){
 	char *filepath = DEFAULT_RET_STR;
 	long long size;
 	unsigned long ino;
+	struct inode_info *inode_info;
 
 	if (unlikely(!old_dentry || !(old_dentry->d_inode) || !S_ISREG(old_dentry->d_inode->i_mode)))
 		return 0;
 	else 
 		old_inode = old_dentry->d_inode;
-	if (unlikely(!new_dentry || !(new_dentry->d_inode) || !S_ISREG(new_dentry->d_inode->i_mode)))
-	
-	//获取原文件的路径
+	//分配路径缓冲区
 	pname_buf = kzalloc(PATH_MAX, GFP_KERNEL);
 	if (unlikely(!pname_buf)) {
 		return 0;
 	}
-	filepath = dentry_path_raw(old_dentry, pname_buf, PATH_MAX);
-	if (unlikely(IS_ERR(filepath))) {
-		kfree(pname_buf);
-		return 0;
-	}
 
-	// 只监控特定目录的文件操作
-    if (strncmp(filepath, target_dir, strlen(target_dir)) != 0) {
-        kfree(pname_buf);
-        // write_unlock(&write_lock);
-        return 0;  // 如果文件路径不匹配，则直接返回
-    }
-	//获取原文件的文件名
-	old_name = (char *)old_dentry->d_name.name;
-	//获取原文件的inode号
-	ino = (unsigned long)old_inode->i_ino;
-	//获得文件大小
-	size = old_dentry->d_inode->i_size;
-	if (unlikely(size <= 0)){
+	//从哈希表中获取对应的文件信息
+	inode_info = find_inode(old_inode->i_ino);
+	if (unlikely(!inode_info)){
+		filepath = dentry_path_raw(old_dentry, pname_buf, PATH_MAX);
+		if (unlikely(IS_ERR(filepath))) {
+			kfree(pname_buf);
+			return 0;
+		}
+
+		// 只监控特定目录的文件操作
+		if (strncmp(filepath, target_dir, strlen(target_dir)) != 0) {
+			kfree(pname_buf);
+			return 0;  // 如果文件路径不匹配，则直接返回
+		}
+		//获取文件大小
+		size = old_dentry->d_inode->i_size;
+		if (unlikely(size <= 0)){
+			kfree(pname_buf);
+			return 0;
+		}
+		//记录原文件名和inode号
+		old_name = (char *)old_dentry->d_name.name;
+		ino = old_dentry->d_inode->i_ino;
+		} else {
+				filepath = inode_info->file_path;
+				size = inode_info->size;
+				if (unlikely(size <= 0)){
+					kfree(pname_buf);
+					return 0;
+				}
+				old_name = inode_info->file_name;
+				ino = inode_info->ino;
+			}	
+
+	//获取新文件名
+	if (unlikely(!new_dentry || !(new_dentry->d_inode) || !S_ISREG(new_dentry->d_inode->i_mode)))
+	{
 		kfree(pname_buf);
 		return 0;
 	}
-	//获取新文件名
 	new_name = (char *)new_dentry->d_name.name;
 
 	result_str = kzalloc(RESULT_LEN, GFP_KERNEL);
@@ -292,7 +432,8 @@ static int close_handler_pre(struct kprobe *p, struct pt_regs *regs){
 	char *f_name = NULL;
 	long long size;
 	unsigned long ino;
-	
+	struct inode *inode;
+	struct inode_info *inode_info;
 	//只处理有效文件的关闭操作
 	if (unlikely(!S_ISREG(file_inode(file)->i_mode))) {
 		return 0;	
@@ -305,29 +446,44 @@ static int close_handler_pre(struct kprobe *p, struct pt_regs *regs){
         return 0;
     }
 
-    // 获取文件路径
-    filepath = f_get_path(file, pname_buf, PATH_MAX);
-    if (unlikely(IS_ERR(filepath))) {
-        kfree(pname_buf);
-        // write_unlock(&write_lock);
-        return 0;
-    }
-
-    // 只监控特定目录的文件操作
-    if (strncmp(filepath, target_dir, strlen(target_dir)) != 0) {
-        kfree(pname_buf);
-        // write_unlock(&write_lock);
-        return 0;  // 如果文件路径不匹配，则直接返回
-    }
-	//获取文件大小
-	size = file->f_path.dentry->d_inode->i_size;
-	if (unlikely(size <= 0)){
+	//从哈希表中获取对应的文件信息
+	inode = file_inode((const struct file *)file);
+	if (unlikely(!inode))
+	{
 		kfree(pname_buf);
 		return 0;
-	}	
-	//记录文件名和inode号
-	f_name = (char *)file->f_path.dentry->d_name.name;
-	ino = file->f_inode->i_ino;
+	}
+	inode_info = find_inode(inode->i_ino);
+	if (unlikely(!inode_info)){
+		filepath = dentry_path_raw(file->f_path.dentry, pname_buf, PATH_MAX);
+		if (unlikely(IS_ERR(filepath))) {
+			kfree(pname_buf);
+			return 0;
+		}
+		// 只监控特定目录的文件操作
+		if (strncmp(filepath, target_dir, strlen(target_dir)) != 0) {
+			kfree(pname_buf);
+			return 0;  // 如果文件路径不匹配，则直接返回
+		}
+		//获取文件大小
+		size = file->f_path.dentry->d_inode->i_size;
+		if (unlikely(size <= 0)){
+			kfree(pname_buf);
+			return 0;
+		}
+		//记录文件名和inode号
+		f_name = (char *)file->f_path.dentry->d_name.name;
+		ino = file->f_path.dentry->d_inode->i_ino;
+		} else {
+				filepath = inode_info->file_path;
+				size = inode_info->size;
+				if (unlikely(size <= 0)){
+					kfree(pname_buf);
+					return 0;
+				}
+				f_name = inode_info->file_name;
+				ino = inode_info->ino;
+			}	
 
 	result_str = kzalloc(RESULT_LEN, GFP_KERNEL);
 	if (likely(result_str)){
@@ -335,6 +491,7 @@ static int close_handler_pre(struct kprobe *p, struct pt_regs *regs){
 	        current->comm, current->real_parent->comm, CLOSE_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
 	}	
 	pr_info("%s", result_str);
+	delete_inode(ino);
 	kfree(pname_buf);
 	if (likely(result_str))
 		kfree(result_str);
@@ -374,13 +531,7 @@ static void create_handler_post(struct kprobe *p, struct pt_regs *regs, unsigned
 		kfree(pname_buf);
 		return ;  // 如果文件路径不匹配，则直接返回
 	}
-	//获取文件大小
-	// size = dentry->d_inode->i_size;
-	// if (unlikely(size <= 0)){
-	// 	kfree(pname_buf);
-	// 	return 0;
-	// }	
-	//记录文件名和inode号
+	//记录文件名
 	f_name = (char *)dentry->d_name.name;
 	
 	result_str = kzalloc(RESULT_LEN, GFP_KERNEL);
@@ -406,6 +557,7 @@ static int delete_handler_pre(struct kprobe *p, struct pt_regs *regs){
 	char *f_name = NULL;
 	long long size;
 	unsigned long ino;
+	struct inode_info *inode_info = NULL;
 
 	//分配内存给文件路径缓冲区
 	pname_buf = kzalloc(PATH_MAX, GFP_KERNEL);
@@ -420,27 +572,39 @@ static int delete_handler_pre(struct kprobe *p, struct pt_regs *regs){
 		return 0;	
 	}
 
-	//获取文件路径
-	filepath = dentry_path_raw(dentry, pname_buf, PATH_MAX);
-	if (unlikely(IS_ERR(filepath))) {
-		kfree(pname_buf);
-		return 0;
-	}
+	//从哈希表中获取对应的文件信息
+	inode_info = find_inode(dentry->d_inode->i_ino);
+	if (unlikely(!inode_info)){
+		filepath = dentry_path_raw(dentry, pname_buf, PATH_MAX);
+		if (unlikely(IS_ERR(filepath))) {
+			kfree(pname_buf);
+			return 0;
+		}
 
-	// 只监控特定目录的文件操作
-	if (strncmp(filepath, target_dir, strlen(target_dir)) != 0) {
-		kfree(pname_buf);
-		return 0;  // 如果文件路径不匹配，则直接返回
-	}
-	//获取文件大小
-	size = dentry->d_inode->i_size;
-	if (unlikely(size <= 0)){
-		kfree(pname_buf);
-		return 0;
-	}
-	//记录文件名和inode号
-	f_name = (char *)dentry->d_name.name;
-	ino = dentry->d_inode->i_ino;
+		// 只监控特定目录的文件操作
+		if (strncmp(filepath, target_dir, strlen(target_dir)) != 0) {
+			kfree(pname_buf);
+			return 0;  // 如果文件路径不匹配，则直接返回
+		}
+		//获取文件大小
+		size = dentry->d_inode->i_size;
+		if (unlikely(size <= 0)){
+			kfree(pname_buf);
+			return 0;
+		}
+		//记录文件名和inode号
+		f_name = (char *)dentry->d_name.name;
+		ino = dentry->d_inode->i_ino;
+		} else {
+				filepath = inode_info->file_path;
+				size = inode_info->size;
+				if (unlikely(size <= 0)){
+					kfree(pname_buf);
+					return 0;
+				}
+				f_name = inode_info->file_name;
+				ino = inode_info->ino;
+	}	
 
 	result_str = kzalloc(RESULT_LEN, GFP_KERNEL);
 	if (likely(result_str)){
@@ -449,6 +613,10 @@ static int delete_handler_pre(struct kprobe *p, struct pt_regs *regs){
 	}
 
 	pr_info("%s", result_str);
+
+	//删除掉哈系表对应的文件信息
+	delete_inode(ino);
+
 	//释放内存资源
 	kfree(pname_buf);
 	if (likely(result_str))
@@ -466,6 +634,7 @@ static int open_handler_pre(struct kprobe *p, struct pt_regs *regs)
 	char *f_name = NULL;
 	long long size;
 	unsigned long ino;
+	int retval;
 
 	//只处理有效的文件打开操作
 	if (unlikely(IS_ERR_OR_NULL(file) || !(file->f_inode) || !S_ISREG(file->f_inode->i_mode))){
@@ -501,6 +670,15 @@ static int open_handler_pre(struct kprobe *p, struct pt_regs *regs)
 	//记录文件名和inode号
 	f_name = (char *)file->f_path.dentry->d_name.name;
 	ino = file->f_inode->i_ino;
+
+	//分配并将文件信息填充到inode_info中
+	retval = add_inode(ino, f_name, filepath, size);
+	if (!retval)
+	{
+		pr_info("add inode info failed\n");
+		kfree(pname_buf);
+		return 0;
+	}
 
 	result_str = kzalloc(RESULT_LEN, GFP_KERNEL);
 	if (likely(result_str)){
@@ -689,6 +867,7 @@ static int __init kprobe_init(void)
 		return ret;
 	}
 	pr_info("register_ kprobe success: create/open/write/read/rename/close/delete_kprobe.\n");
+	rwlock_init(&inode_hash_lock);
 	return 0;
 }
 
