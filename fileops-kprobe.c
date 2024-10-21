@@ -501,8 +501,8 @@ static int rename_handler_pre(struct kprobe *p, struct pt_regs *regs){
 
 	result_str = kzalloc(RESULT_LEN, GFP_KERNEL);
 	if (likely(result_str)){
-		snprintf(result_str, RESULT_LEN, "task_name:%s\ttask_exe_path:%s\ttask_parent:%s\ttask_paren_exe_path:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\t\n",
-				current->comm, exe_path, current->real_parent->comm, exe_parent_path, READ_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
+		snprintf(result_str, RESULT_LEN, "task_name:%s\ttask_exe_path:%s\ttask_parent:%s\ttask_paren_exe_path:%s\nfile_op: %s\told_file_name:%s\tfile_path:%s\tnew_file_name:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\t\n",
+				current->comm, exe_path, current->real_parent->comm, exe_parent_path, READ_OP, old_name, filepath, new_name, size, ino, ktime_get_real_seconds());
 	}
 
 	pr_info("%s",result_str);
@@ -654,13 +654,13 @@ static void create_handler_post(struct kprobe *p, struct pt_regs *regs, unsigned
 	exe_buf = kzalloc(PATH_MAX, GFP_KERNEL);
 	if (unlikely(!exe_buf)) {
 		kfree(pname_buf);
-		return 0;
+		return;
 	}
 	exe_parent_buf = kzalloc(PATH_MAX, GFP_KERNEL);
 	if (unlikely(!exe_parent_buf)){
 		kfree(pname_buf);
 		kfree(exe_buf);
-		return 0;
+		return;
 	}
 	//获取进程的执行路径和父进程的执行路径
 	exe_path = get_exe_path(current, exe_buf, PATH_MAX);
@@ -668,8 +668,8 @@ static void create_handler_post(struct kprobe *p, struct pt_regs *regs, unsigned
 
 	result_str = kzalloc(RESULT_LEN, GFP_KERNEL);
 	if (likely(result_str)){
-		snprintf(result_str, RESULT_LEN, "task_name:%s\ttask_exe_path:%s\ttask_parent:%s\ttask_paren_exe_path:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\t\n",
-				current->comm, exe_path, current->real_parent->comm, exe_parent_path, READ_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
+		snprintf(result_str, RESULT_LEN, "task_name:%s\ttask_exe_path:%s\ttask_parent:%s\ttask_paren_exe_path:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %d Bytes\ninode:%d\taccess_time:%lld\t\n",
+				current->comm, exe_path, current->real_parent->comm, exe_parent_path, READ_OP, f_name, filepath, DEFAULT_SIZE, DEFAULT_INO, ktime_get_real_seconds());
 	}
 	pr_info("%s", result_str);
 	//释放内存资源
