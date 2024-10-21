@@ -80,6 +80,39 @@ struct inode_info {
 // }
 
 
+//获取task的进程执行文件路径
+static char *get_exe_path(struct task_struct *task, char *buf, int size){
+	char *exe_path = "-1";
+
+	if (unlikely(!buf))
+		return exe_path;
+
+	if (likely(task->mm)){
+		if(likely(task->mm->exe_file)){
+			exe_path = d_path(&(task->mm->exe_file->f_path), buf, size);
+		}
+	}
+
+	if (unlikely(IS_ERR(exe_path)))
+		exe_path = "-1";
+
+	return exe_path;
+
+}
+
+//获取当前进程的父进程的文件执行路径
+static char *get_parent_exe_path(struct task_struct *task, char *buf, int size){
+	char *exe_path = "-1";
+	struct task_struct *p = NULL;
+
+	if (task->real_parent){
+		p = task->real_parent;
+		exe_path = get_exe_path(p, buf, size);
+	}
+
+	return exe_path;
+}
+
 ////添加某个inode项及对应的文件信息
 static int add_inode(unsigned long ino, char *file_name, char *file_path, long long size){
 	struct inode_info *i = NULL;
@@ -175,6 +208,10 @@ static int write_handler_pre(struct kprobe *p, struct pt_regs *regs)
 	long long size;
 	unsigned long ino;
 	size_t len = (size_t)regs_get_arg3(regs);
+	char *exe_buf = NULL;
+	char *exe_parent_buf = NULL;
+	char *exe_path = NULL;
+	char *exe_parent_path = NULL;
 	struct inode_info *inode_info;
 	struct inode *inode;
     // 写锁保护
@@ -229,12 +266,27 @@ static int write_handler_pre(struct kprobe *p, struct pt_regs *regs)
 				}
 				f_name = inode_info->file_name;
 				ino = inode_info->ino;
-			}	
+		}	
+
+	exe_buf = kzalloc(PATH_MAX, GFP_KERNEL);
+	if (unlikely(!exe_buf)) {
+		kfree(pname_buf);
+		return 0;
+	}
+	exe_parent_buf = kzalloc(PATH_MAX, GFP_KERNEL);
+	if (unlikely(!exe_parent_buf)){
+		kfree(pname_buf);
+		kfree(exe_buf);
+		return 0;
+	}
+	//获取进程的执行路径和父进程的执行路径
+	exe_path = get_exe_path(current, exe_buf, PATH_MAX);
+	exe_parent_path = get_parent_exe_path(current, exe_parent_buf, PATH_MAX);
 
 	result_str = kzalloc(RESULT_LEN, GFP_KERNEL);
 	if (likely(result_str)){
-		snprintf(result_str, RESULT_LEN, "process_name:%s\tprocess_parent:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\t\n",
-				current->comm, current->real_parent->comm, WRITE_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
+		snprintf(result_str, RESULT_LEN, "task_name:%s\ttask_exe_path:%s\ttask_parent:%s\ttask_parent_exe_path:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\t\n",
+				current->comm, exe_path, current->real_parent->comm, exe_parent_path, WRITE_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
 	}
 
 	// int str_len = strlen(result_str);
@@ -249,7 +301,8 @@ static int write_handler_pre(struct kprobe *p, struct pt_regs *regs)
 	if (likely(result_str))
 		kfree(result_str);
     // write_unlock(&write_lock);
-
+	kfree(exe_buf);
+	kfree(exe_parent_buf);
     return 0;
 }
 
@@ -263,6 +316,10 @@ static int read_handler_pre(struct kprobe *p, struct pt_regs *regs)
 	long long size;
 	unsigned long ino;
 	size_t len = (size_t)regs_get_arg3(regs);
+	char *exe_buf = NULL;
+	char *exe_parent_buf = NULL;
+	char *exe_path = NULL;
+	char *exe_parent_path = NULL;
 	struct inode_info *inode_info;
 	struct inode *inode;
 
@@ -320,10 +377,25 @@ static int read_handler_pre(struct kprobe *p, struct pt_regs *regs)
 				ino = inode_info->ino;
 			}	
 
+	exe_buf = kzalloc(PATH_MAX, GFP_KERNEL);
+	if (unlikely(!exe_buf)) {
+		kfree(pname_buf);
+		return 0;
+	}
+	exe_parent_buf = kzalloc(PATH_MAX, GFP_KERNEL);
+	if (unlikely(!exe_parent_buf)){
+		kfree(pname_buf);
+		kfree(exe_buf);
+		return 0;
+	}
+	//获取进程的执行路径和父进程的执行路径
+	exe_path = get_exe_path(current, exe_buf, PATH_MAX);
+	exe_parent_path = get_parent_exe_path(current, exe_parent_buf, PATH_MAX);
+
 	result_str = kzalloc(RESULT_LEN, GFP_KERNEL);
 	if (likely(result_str)){
-		snprintf(result_str, RESULT_LEN, "process_name:%s\tprocess_parent:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\t\n",
-				current->comm, current->real_parent->comm, READ_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
+		snprintf(result_str, RESULT_LEN, "task_name:%s\ttask_exe_path:%s\ttask_parent:%s\ttask_paren_exe_path:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\t\n",
+				current->comm, exe_path, current->real_parent->comm, exe_parent_path, READ_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
 	}
 
 	// int str_len = strlen(result_str);
@@ -337,7 +409,8 @@ static int read_handler_pre(struct kprobe *p, struct pt_regs *regs)
     kfree(pname_buf);
 	if (likely(result_str))
 		kfree(result_str);
-    // write_unlock(&write_lock);
+    kfree(exe_buf);
+	kfree(exe_parent_buf);
 
     return 0;
 }
@@ -353,6 +426,10 @@ static int rename_handler_pre(struct kprobe *p, struct pt_regs *regs){
 	char *filepath = DEFAULT_RET_STR;
 	long long size;
 	unsigned long ino;
+	char *exe_buf = NULL;
+	char *exe_parent_buf = NULL;
+	char *exe_path = NULL;
+	char *exe_parent_path = NULL;
 	struct inode_info *inode_info;
 
 	if (unlikely(!old_dentry || !(old_dentry->d_inode) || !S_ISREG(old_dentry->d_inode->i_mode)))
@@ -407,10 +484,25 @@ static int rename_handler_pre(struct kprobe *p, struct pt_regs *regs){
 	}
 	new_name = (char *)new_dentry->d_name.name;
 
+	exe_buf = kzalloc(PATH_MAX, GFP_KERNEL);
+	if (unlikely(!exe_buf)) {
+		kfree(pname_buf);
+		return 0;
+	}
+	exe_parent_buf = kzalloc(PATH_MAX, GFP_KERNEL);
+	if (unlikely(!exe_parent_buf)){
+		kfree(pname_buf);
+		kfree(exe_buf);
+		return 0;
+	}
+	//获取进程的执行路径和父进程的执行路径
+	exe_path = get_exe_path(current, exe_buf, PATH_MAX);
+	exe_parent_path = get_parent_exe_path(current, exe_parent_buf, PATH_MAX);
+
 	result_str = kzalloc(RESULT_LEN, GFP_KERNEL);
 	if (likely(result_str)){
-		snprintf(result_str, RESULT_LEN, "process_name:%s\tprocess_parent:%s\nfile_op: %s\told_name:%s\told_file_path:%s\tnew_file_name:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\t\n",
-				current->comm, current->real_parent->comm, RENAME_OP, old_name, filepath, new_name,size, ino, ktime_get_real_seconds());
+		snprintf(result_str, RESULT_LEN, "task_name:%s\ttask_exe_path:%s\ttask_parent:%s\ttask_paren_exe_path:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\t\n",
+				current->comm, exe_path, current->real_parent->comm, exe_parent_path, READ_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
 	}
 
 	pr_info("%s",result_str);
@@ -419,7 +511,8 @@ static int rename_handler_pre(struct kprobe *p, struct pt_regs *regs){
 	if (likely(result_str))
 		kfree(result_str);
     // write_unlock(&write_lock);
-
+	kfree(exe_buf);
+	kfree(exe_parent_buf);
     return 0;
 
 }
@@ -433,6 +526,10 @@ static int close_handler_pre(struct kprobe *p, struct pt_regs *regs){
 	long long size;
 	unsigned long ino;
 	struct inode *inode;
+	char *exe_buf = NULL;
+	char *exe_parent_buf = NULL;
+	char *exe_path = NULL;
+	char *exe_parent_path = NULL;
 	struct inode_info *inode_info;
 	//只处理有效文件的关闭操作
 	if (unlikely(!S_ISREG(file_inode(file)->i_mode))) {
@@ -484,17 +581,33 @@ static int close_handler_pre(struct kprobe *p, struct pt_regs *regs){
 				f_name = inode_info->file_name;
 				ino = inode_info->ino;
 			}	
+	exe_buf = kzalloc(PATH_MAX, GFP_KERNEL);
+	if (unlikely(!exe_buf)) {
+		kfree(pname_buf);
+		return 0;
+	}
+	exe_parent_buf = kzalloc(PATH_MAX, GFP_KERNEL);
+	if (unlikely(!exe_parent_buf)){
+		kfree(pname_buf);
+		kfree(exe_buf);
+		return 0;
+	}
+	//获取进程的执行路径和父进程的执行路径
+	exe_path = get_exe_path(current, exe_buf, PATH_MAX);
+	exe_parent_path = get_parent_exe_path(current, exe_parent_buf, PATH_MAX);
 
 	result_str = kzalloc(RESULT_LEN, GFP_KERNEL);
 	if (likely(result_str)){
-		snprintf(result_str, RESULT_LEN, "process_name:%s\tprocess_parent:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\t\n",
-	        current->comm, current->real_parent->comm, CLOSE_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
-	}	
+		snprintf(result_str, RESULT_LEN, "task_name:%s\ttask_exe_path:%s\ttask_parent:%s\ttask_paren_exe_path:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\t\n",
+				current->comm, exe_path, current->real_parent->comm, exe_parent_path, READ_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
+	}
 	pr_info("%s", result_str);
 	delete_inode(ino);
 	kfree(pname_buf);
 	if (likely(result_str))
 		kfree(result_str);
+	kfree(exe_buf);
+	kfree(exe_parent_buf);
 	return 0;
 }
 
@@ -505,6 +618,10 @@ static void create_handler_post(struct kprobe *p, struct pt_regs *regs, unsigned
 	char *filepath = DEFAULT_RET_STR;
 	char *result_str = NULL;
 	char *f_name = NULL;
+	char *exe_buf = NULL;
+	char *exe_parent_buf = NULL;
+	char *exe_path = NULL;
+	char *exe_parent_path = NULL;
 	// long long size;
 	// long ino = DEFAULT_INO; 
 
@@ -534,18 +651,34 @@ static void create_handler_post(struct kprobe *p, struct pt_regs *regs, unsigned
 	//记录文件名
 	f_name = (char *)dentry->d_name.name;
 	
+	exe_buf = kzalloc(PATH_MAX, GFP_KERNEL);
+	if (unlikely(!exe_buf)) {
+		kfree(pname_buf);
+		return 0;
+	}
+	exe_parent_buf = kzalloc(PATH_MAX, GFP_KERNEL);
+	if (unlikely(!exe_parent_buf)){
+		kfree(pname_buf);
+		kfree(exe_buf);
+		return 0;
+	}
+	//获取进程的执行路径和父进程的执行路径
+	exe_path = get_exe_path(current, exe_buf, PATH_MAX);
+	exe_parent_path = get_parent_exe_path(current, exe_parent_buf, PATH_MAX);
+
 	result_str = kzalloc(RESULT_LEN, GFP_KERNEL);
 	if (likely(result_str)){
-		snprintf(result_str, RESULT_LEN, "process_name:%s\tprocess_parent:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %d Bytes\ninode:%d\taccess_time:%lld\t\n",
-									current->comm, current->real_parent->comm, CREATE_OP, f_name, filepath, DEFAULT_SIZE, DEFAULT_INO, ktime_get_real_seconds());
-	}	
+		snprintf(result_str, RESULT_LEN, "task_name:%s\ttask_exe_path:%s\ttask_parent:%s\ttask_paren_exe_path:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\t\n",
+				current->comm, exe_path, current->real_parent->comm, exe_parent_path, READ_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
+	}
 	pr_info("%s", result_str);
 	//释放内存资源
 	// pr_info("是不是你5！\n");
 	kfree(pname_buf);
 	if (likely(result_str))
 		kfree(result_str);
-	
+	kfree(exe_buf);
+	kfree(exe_parent_buf);
 	return ;
 }
 
@@ -557,6 +690,10 @@ static int delete_handler_pre(struct kprobe *p, struct pt_regs *regs){
 	char *f_name = NULL;
 	long long size;
 	unsigned long ino;
+	char *exe_buf = NULL;
+	char *exe_parent_buf = NULL;
+	char *exe_path = NULL;
+	char *exe_parent_path = NULL;
 	struct inode_info *inode_info = NULL;
 
 	//分配内存给文件路径缓冲区
@@ -605,11 +742,25 @@ static int delete_handler_pre(struct kprobe *p, struct pt_regs *regs){
 				f_name = inode_info->file_name;
 				ino = inode_info->ino;
 	}	
+	exe_buf = kzalloc(PATH_MAX, GFP_KERNEL);
+	if (unlikely(!exe_buf)) {
+		kfree(pname_buf);
+		return 0;
+	}
+	exe_parent_buf = kzalloc(PATH_MAX, GFP_KERNEL);
+	if (unlikely(!exe_parent_buf)){
+		kfree(pname_buf);
+		kfree(exe_buf);
+		return 0;
+	}
+	//获取进程的执行路径和父进程的执行路径
+	exe_path = get_exe_path(current, exe_buf, PATH_MAX);
+	exe_parent_path = get_parent_exe_path(current, exe_parent_buf, PATH_MAX);
 
 	result_str = kzalloc(RESULT_LEN, GFP_KERNEL);
 	if (likely(result_str)){
-		snprintf(result_str, RESULT_LEN, "process_name:%s\tprocess_parent:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\t\n",
-									current->comm, current->real_parent->comm, DELETE_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
+		snprintf(result_str, RESULT_LEN, "task_name:%s\ttask_exe_path:%s\ttask_parent:%s\ttask_paren_exe_path:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\t\n",
+				current->comm, exe_path, current->real_parent->comm, exe_parent_path, READ_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
 	}
 
 	pr_info("%s", result_str);
@@ -621,7 +772,8 @@ static int delete_handler_pre(struct kprobe *p, struct pt_regs *regs){
 	kfree(pname_buf);
 	if (likely(result_str))
 		kfree(result_str);
-
+	kfree(exe_buf);
+	kfree(exe_parent_buf);
 	return 0;
 }
 
@@ -634,6 +786,10 @@ static int open_handler_pre(struct kprobe *p, struct pt_regs *regs)
 	char *f_name = NULL;
 	long long size;
 	unsigned long ino;
+	char *exe_buf = NULL;
+	char *exe_parent_buf = NULL;
+	char *exe_path = NULL;
+	char *exe_parent_path = NULL;
 	int retval;
 
 	//只处理有效的文件打开操作
@@ -680,10 +836,25 @@ static int open_handler_pre(struct kprobe *p, struct pt_regs *regs)
 		return 0;
 	}
 
+	exe_buf = kzalloc(PATH_MAX, GFP_KERNEL);
+	if (unlikely(!exe_buf)) {
+		kfree(pname_buf);
+		return 0;
+	}
+	exe_parent_buf = kzalloc(PATH_MAX, GFP_KERNEL);
+	if (unlikely(!exe_parent_buf)){
+		kfree(pname_buf);
+		kfree(exe_buf);
+		return 0;
+	}
+	//获取进程的执行路径和父进程的执行路径
+	exe_path = get_exe_path(current, exe_buf, PATH_MAX);
+	exe_parent_path = get_parent_exe_path(current, exe_parent_buf, PATH_MAX);
+
 	result_str = kzalloc(RESULT_LEN, GFP_KERNEL);
 	if (likely(result_str)){
-		snprintf(result_str, RESULT_LEN, "process_name:%s\tprocess_parent:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\n",
-			current->comm, current->real_parent->comm, OPEN_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
+		snprintf(result_str, RESULT_LEN, "task_name:%s\ttask_exe_path:%s\ttask_parent:%s\ttask_paren_exe_path:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\t\n",
+				current->comm, exe_path, current->real_parent->comm, exe_parent_path, READ_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
 	}
 	pr_info("%s", result_str);
 
@@ -691,7 +862,8 @@ static int open_handler_pre(struct kprobe *p, struct pt_regs *regs)
 	kfree(pname_buf);
 	if (likely(result_str))
 		kfree(result_str);
-
+	kfree(exe_buf);
+	kfree(exe_parent_buf);
 	return 0;
 }
 

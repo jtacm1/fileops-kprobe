@@ -8,8 +8,8 @@
       "args": [],
       "stopAtEntry": false,
       "externalConsole": false,
-      "cwd": "/home/jt/kprobe_demo",
-      "program": "/home/jt/kprobe_demo/build/Debug/outDebug",
+      "cwd": "/home/jt/fileops-kprobe",
+      "program": "/home/jt/fileops-kprobe/build/Debug/outDebug",
       "MIMode": "gdb",
       "miDebuggerPath": "gdb",
       "setupCommands": [
