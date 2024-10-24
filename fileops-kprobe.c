@@ -15,8 +15,12 @@
 #include "./util.h"
 #include <linux/list.h>
 #include <linux/hashtable.h>
+// #include "netlink_kernel.h"
+#include <linux/netlink.h>
+#include <linux/skbuff.h>
+#include <net/sock.h>
 
-
+#define NETLINK_USER 17
 #define MONITOR_PATH "/home/jt/下载"  // 默认指定需要监控的目录
 #define CREATE_OP "01"
 #define OPEN_OP "02"
@@ -37,6 +41,8 @@ MODULE_PARM_DESC(dir, "target directory to monitor");
 DEFINE_HASHTABLE(inode_hash_table, 11); //定义inode哈系表
 LIST_HEAD(inode_list); //定义inode双向链表头
 rwlock_t inode_hash_lock; //定义inode哈系表读写锁
+static int user_pid = 0;
+static struct sock *nl_sk;
 
 //定义表中inode节点的结构体
 struct inode_info {
@@ -79,6 +85,71 @@ struct inode_info {
 //     return (0x12 == c.s[0]);
 // }
 
+//内核态 向用户态发送消息
+static void send_msg_to_user(char *msg, int flag)
+{
+	struct sk_buff *skb;
+	struct nlmsghdr *nlh;
+	int msg_size = strlen(msg);
+	int res;
+
+	if (user_pid == 0)
+	{
+		printk("No user pid available\n");
+		return;
+	}
+	//创建消息缓冲区
+	skb = nlmsg_new(msg_size, GFP_KERNEL);
+	if (!skb) {
+		printk("Failed to allocate new skb\n");
+		return;
+	}
+	// write_lock(&nl_sk_lock);
+	//填充netlink消息头
+	nlh = nlmsg_put(skb, 0, 0, NLMSG_DONE, msg_size, 0);
+	if (!nlh) {
+		printk("Failed to put nl header\n");
+		kfree_skb(skb);
+		return;
+	}
+	strncpy(NLMSG_DATA(nlh), msg, msg_size);
+	//发送消息到用户态
+	res = nlmsg_unicast(nl_sk, skb, user_pid);
+	// write_unlock(&nl_sk_lock);
+	if (res < 0) {
+		printk("Error in sending message to user\n");
+	} else {
+		printk("Message sent to user successfully, message:%s\n", msg);
+	}
+
+	// kfree(skb);
+	if(flag)
+		kfree(msg);
+}
+
+//内核态 接受netlink消息的回调函数
+static void netlink_recv_msg(struct sk_buff *skb)
+{
+	struct nlmsghdr *nlh;
+	char *user_msg;
+
+	//获取netlinkx消息头部
+	nlh = nlmsg_hdr(skb);
+	user_msg = (char *)nlmsg_data(nlh);
+	if (user_msg){
+		printk("netlink user message is : %s\n", user_msg);
+		user_pid = nlh->nlmsg_pid;
+		printk("user pid: %d registered\n", user_pid);
+		// send_msg_to_user("Hello, this is a kernel message send to user space.\n", 1);
+	} else
+	{
+		printk("No message received\n");
+		return;
+	}
+
+	return;
+
+}
 
 //获取task的进程执行文件路径
 static char *get_exe_path(struct task_struct *task, char *buf, int size){
@@ -295,7 +366,8 @@ static int write_handler_pre(struct kprobe *p, struct pt_regs *regs)
     // pr_info("process_name:%s\tprocess_parent:%s\tfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\tinode:%lu\taccess_time:%lld\t\n",
     //         proc_name, parent_proc, f_op, f_name, filepath, stat.size, ino, timestamp);
 
-	pr_info("%s",result_str);
+	// pr_info("%s",result_str);
+	send_msg_to_user(result_str, 0);
     // 释放资源
     kfree(pname_buf);
 	if (likely(result_str))
@@ -398,13 +470,12 @@ static int read_handler_pre(struct kprobe *p, struct pt_regs *regs)
 				current->comm, exe_path, current->real_parent->comm, exe_parent_path, READ_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
 	}
 
-	// int str_len = strlen(result_str);
-	// pr_info("result length: %d\n", str_len);
     // 打印信息
     // pr_info("process_name:%s\tprocess_parent:%s\tfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\tinode:%lu\taccess_time:%lld\t\n",
     //         proc_name, parent_proc, f_op, f_name, filepath, stat.size, ino, timestamp);
 
-	pr_info("%s",result_str);
+	// pr_info("%s",result_str);
+	send_msg_to_user(result_str, 0);
     // 释放资源
     kfree(pname_buf);
 	if (likely(result_str))
@@ -505,7 +576,8 @@ static int rename_handler_pre(struct kprobe *p, struct pt_regs *regs){
 				current->comm, exe_path, current->real_parent->comm, exe_parent_path, READ_OP, old_name, filepath, new_name, size, ino, ktime_get_real_seconds());
 	}
 
-	pr_info("%s",result_str);
+	// pr_info("%s",result_str);
+	send_msg_to_user(result_str, 0);
     // 释放资源
     kfree(pname_buf);
 	if (likely(result_str))
@@ -601,7 +673,8 @@ static int close_handler_pre(struct kprobe *p, struct pt_regs *regs){
 		snprintf(result_str, RESULT_LEN, "task_name:%s\ttask_exe_path:%s\ttask_parent:%s\ttask_paren_exe_path:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\t\n",
 				current->comm, exe_path, current->real_parent->comm, exe_parent_path, READ_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
 	}
-	pr_info("%s", result_str);
+	// pr_info("%s", result_str);
+	send_msg_to_user(result_str, 0);
 	delete_inode(ino);
 	kfree(pname_buf);
 	if (likely(result_str))
@@ -671,7 +744,8 @@ static void create_handler_post(struct kprobe *p, struct pt_regs *regs, unsigned
 		snprintf(result_str, RESULT_LEN, "task_name:%s\ttask_exe_path:%s\ttask_parent:%s\ttask_paren_exe_path:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %d Bytes\ninode:%d\taccess_time:%lld\t\n",
 				current->comm, exe_path, current->real_parent->comm, exe_parent_path, READ_OP, f_name, filepath, DEFAULT_SIZE, DEFAULT_INO, ktime_get_real_seconds());
 	}
-	pr_info("%s", result_str);
+	// pr_info("%s", result_str);
+	send_msg_to_user(result_str, 0);
 	//释放内存资源
 	// pr_info("是不是你5！\n");
 	kfree(pname_buf);
@@ -763,7 +837,8 @@ static int delete_handler_pre(struct kprobe *p, struct pt_regs *regs){
 				current->comm, exe_path, current->real_parent->comm, exe_parent_path, READ_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
 	}
 
-	pr_info("%s", result_str);
+	// pr_info("%s", result_str);
+	send_msg_to_user(result_str, 0);
 
 	//删除掉哈系表对应的文件信息
 	delete_inode(ino);
@@ -856,7 +931,8 @@ static int open_handler_pre(struct kprobe *p, struct pt_regs *regs)
 		snprintf(result_str, RESULT_LEN, "task_name:%s\ttask_exe_path:%s\ttask_parent:%s\ttask_paren_exe_path:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\t\n",
 				current->comm, exe_path, current->real_parent->comm, exe_parent_path, READ_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
 	}
-	pr_info("%s", result_str);
+	// pr_info("%s", result_str);
+	send_msg_to_user(result_str, 0);
 
 	//释放内存资源
 	kfree(pname_buf);
@@ -1027,12 +1103,43 @@ static void uninstall_kprobe(void){
 	unregister_open_kprobe();
 }
 
+//内核态 注册netlink
+static __init int netlink_init(void)
+{
+	// int ret;
+	struct netlink_kernel_cfg cfg = {
+		.input = netlink_recv_msg,
+	};
+	//创建netlink套接字
+	nl_sk = netlink_kernel_create(&init_net, NETLINK_USER, &cfg);
+	if (!nl_sk) {
+		printk("Error creating socket.\n");
+		return -3;
+	}
+	// rwlock_init(&nl_sk_lock);
+	printk("Netlink socket created\n");
+	// send_msg_to_user(msg);
+	return 0;
+}
+
+//内核态 卸载netlink
+static __exit void netlink_exit(void)
+{
+	netlink_kernel_release(nl_sk);
+	printk("Socket released\n");
+}
+
 static int __init kprobe_init(void)
 {
 	int ret;
 
 	// mutex_init(&kmutex);
 	// rwlock_init(&write_lock);
+	ret = netlink_init();
+	if (ret < 0) {
+		pr_err("netlink_init failed, returned %d\n", ret);
+		return ret;
+	}
 	ret = install_kprobe();
 	if (ret < 0) {
 		pr_err("register_kprobe failed\n, returned %d\n", ret);
@@ -1045,6 +1152,7 @@ static int __init kprobe_init(void)
 
 static void __exit kprobe_exit(void)
 {
+	netlink_exit();
 	uninstall_kprobe();
 	// mutex_unlock(&kmutex);
 	pr_info("kprobe unregistered\n");

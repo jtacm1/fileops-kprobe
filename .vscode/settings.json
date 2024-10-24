@@ -81,6 +81,14 @@
     "initializer_list": "c",
     "mutex.h": "c",
     "spinlock.h": "c",
-    "cstdlib": "c"
+    "cstdlib": "c",
+    "netlink_kernel.h": "c",
+    "mutex": "cpp",
+    "condition_variable": "c",
+    "forward_list": "c",
+    "executor": "c",
+    "ostream": "c",
+    "kernel.h": "c",
+    "sock.h": "c"
   }
 }

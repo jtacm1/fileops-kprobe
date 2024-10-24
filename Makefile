@@ -5,7 +5,9 @@ MODULE_NAME		:= fileops-kprobe
 PWD			:= $(shell pwd)
 KERNEL_HEAD		:= $(shell uname -r)
 KERNEL_DIR		:= /lib/modules/$(KERNEL_HEAD)/build
-obj-m			:= $(MODULE_NAME).o
+obj-m			+= $(MODULE_NAME).o
+#fileops-kprobe-objs := netlink_kernel.o
+
 all:
 	$(MAKE) -C $(KERNEL_DIR) M=$(PWD) modules
 
