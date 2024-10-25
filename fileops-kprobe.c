@@ -104,7 +104,6 @@ static void send_msg_to_user(char *msg, int flag)
 		printk("Failed to allocate new skb\n");
 		return;
 	}
-	// write_lock(&nl_sk_lock);
 	//填充netlink消息头
 	nlh = nlmsg_put(skb, 0, 0, NLMSG_DONE, msg_size, 0);
 	if (!nlh) {
@@ -115,14 +114,13 @@ static void send_msg_to_user(char *msg, int flag)
 	strncpy(NLMSG_DATA(nlh), msg, msg_size);
 	//发送消息到用户态
 	res = nlmsg_unicast(nl_sk, skb, user_pid);
-	// write_unlock(&nl_sk_lock);
+
 	if (res < 0) {
 		printk("Error in sending message to user\n");
 	} else {
-		printk("Message sent to user successfully, message:%s\n", msg);
+		printk("A message sent to user successfully\n");
 	}
 
-	// kfree(skb);
 	if(flag)
 		kfree(msg);
 }
@@ -140,10 +138,10 @@ static void netlink_recv_msg(struct sk_buff *skb)
 		printk("netlink user message is : %s\n", user_msg);
 		user_pid = nlh->nlmsg_pid;
 		printk("user pid: %d registered\n", user_pid);
-		// send_msg_to_user("Hello, this is a kernel message send to user space.\n", 1);
+		send_msg_to_user("Hello, this is a kernel message send to user space.\n", 0);
 	} else
 	{
-		printk("No message received\n");
+		printk("No message received, waitting for user pid data.\n");
 		return;
 	}
 
@@ -573,7 +571,7 @@ static int rename_handler_pre(struct kprobe *p, struct pt_regs *regs){
 	result_str = kzalloc(RESULT_LEN, GFP_KERNEL);
 	if (likely(result_str)){
 		snprintf(result_str, RESULT_LEN, "task_name:%s\ttask_exe_path:%s\ttask_parent:%s\ttask_paren_exe_path:%s\nfile_op: %s\told_file_name:%s\tfile_path:%s\tnew_file_name:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\t\n",
-				current->comm, exe_path, current->real_parent->comm, exe_parent_path, READ_OP, old_name, filepath, new_name, size, ino, ktime_get_real_seconds());
+				current->comm, exe_path, current->real_parent->comm, exe_parent_path, RENAME_OP, old_name, filepath, new_name, size, ino, ktime_get_real_seconds());
 	}
 
 	// pr_info("%s",result_str);
@@ -671,7 +669,7 @@ static int close_handler_pre(struct kprobe *p, struct pt_regs *regs){
 	result_str = kzalloc(RESULT_LEN, GFP_KERNEL);
 	if (likely(result_str)){
 		snprintf(result_str, RESULT_LEN, "task_name:%s\ttask_exe_path:%s\ttask_parent:%s\ttask_paren_exe_path:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\t\n",
-				current->comm, exe_path, current->real_parent->comm, exe_parent_path, READ_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
+				current->comm, exe_path, current->real_parent->comm, exe_parent_path, CLOSE_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
 	}
 	// pr_info("%s", result_str);
 	send_msg_to_user(result_str, 0);
@@ -742,7 +740,7 @@ static void create_handler_post(struct kprobe *p, struct pt_regs *regs, unsigned
 	result_str = kzalloc(RESULT_LEN, GFP_KERNEL);
 	if (likely(result_str)){
 		snprintf(result_str, RESULT_LEN, "task_name:%s\ttask_exe_path:%s\ttask_parent:%s\ttask_paren_exe_path:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %d Bytes\ninode:%d\taccess_time:%lld\t\n",
-				current->comm, exe_path, current->real_parent->comm, exe_parent_path, READ_OP, f_name, filepath, DEFAULT_SIZE, DEFAULT_INO, ktime_get_real_seconds());
+				current->comm, exe_path, current->real_parent->comm, exe_parent_path, CREATE_OP, f_name, filepath, DEFAULT_SIZE, DEFAULT_INO, ktime_get_real_seconds());
 	}
 	// pr_info("%s", result_str);
 	send_msg_to_user(result_str, 0);
@@ -834,7 +832,7 @@ static int delete_handler_pre(struct kprobe *p, struct pt_regs *regs){
 	result_str = kzalloc(RESULT_LEN, GFP_KERNEL);
 	if (likely(result_str)){
 		snprintf(result_str, RESULT_LEN, "task_name:%s\ttask_exe_path:%s\ttask_parent:%s\ttask_paren_exe_path:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\t\n",
-				current->comm, exe_path, current->real_parent->comm, exe_parent_path, READ_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
+				current->comm, exe_path, current->real_parent->comm, exe_parent_path, DELETE_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
 	}
 
 	// pr_info("%s", result_str);
@@ -929,7 +927,7 @@ static int open_handler_pre(struct kprobe *p, struct pt_regs *regs)
 	result_str = kzalloc(RESULT_LEN, GFP_KERNEL);
 	if (likely(result_str)){
 		snprintf(result_str, RESULT_LEN, "task_name:%s\ttask_exe_path:%s\ttask_parent:%s\ttask_paren_exe_path:%s\nfile_op: %s\tfile_name:%s\tfile_path:%s\tsize: %lld Bytes\ninode:%lu\taccess_time:%lld\t\n",
-				current->comm, exe_path, current->real_parent->comm, exe_parent_path, READ_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
+				current->comm, exe_path, current->real_parent->comm, exe_parent_path, OPEN_OP, f_name, filepath, size, ino, ktime_get_real_seconds());
 	}
 	// pr_info("%s", result_str);
 	send_msg_to_user(result_str, 0);
@@ -1116,9 +1114,9 @@ static __init int netlink_init(void)
 		printk("Error creating socket.\n");
 		return -3;
 	}
-	// rwlock_init(&nl_sk_lock);
+
 	printk("Netlink socket created\n");
-	// send_msg_to_user(msg);
+
 	return 0;
 }
 
@@ -1133,7 +1131,6 @@ static int __init kprobe_init(void)
 {
 	int ret;
 
-	// mutex_init(&kmutex);
 	// rwlock_init(&write_lock);
 	ret = netlink_init();
 	if (ret < 0) {
