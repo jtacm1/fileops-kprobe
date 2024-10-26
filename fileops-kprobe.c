@@ -832,7 +832,7 @@ static void execve_handler_post(struct kprobe *p, struct pt_regs *regs, unsigned
 				current->comm, exe_path, current->real_parent->comm, exe_parent_path, EXECVE_OP, ktime_get_real_seconds());
 	}
 	// pr_info("%s", result_str);
-	send_msg_to_user(result_str, 0);
+	send_msg_to_user(result_str, 1);
 	//释放内存资源
 	kfree(exe_buf);
 	kfree(exe_parent_buf);
@@ -867,7 +867,7 @@ static int exit_handler_pre(struct kprobe *p, struct pt_regs *regs)
 				current->comm, exe_path, current->real_parent->comm, exe_parent_path, EXIT_OP, ktime_get_real_seconds());
 	}
 	// pr_info("%s", result_str);
-	send_msg_to_user(result_str, 0);
+	send_msg_to_user(result_str, 1);
 	//释放内存资源
 	kfree(exe_buf);
 	kfree(exe_parent_buf);
