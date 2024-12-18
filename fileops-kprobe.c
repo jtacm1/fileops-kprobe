@@ -1115,7 +1115,7 @@ static int __init kprobe_init(void)
 		pr_err("register_kprobe failed\n, returned %d\n", ret);
 		return ret;
 	}
-	pr_info("register_ kprobe success: create/open/write/read/rename/close/delete_kprobe.\n");
+	pr_info("register_ kprobe success: execve/exit_kprobe, create/open/write/read/rename/close/delete_files_kprobe.\n");
 	rwlock_init(&inode_hash_lock);
 	return 0;
 }
